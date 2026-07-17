@@ -13,29 +13,23 @@ AVIATION_STACK_API_KEY = os.getenv("AVIATIONSTACK_API_KEY")
 
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 BASE_DIR = Path(__file__).resolve().parent
-AVIATION_MCP_PYTHON = BASE_DIR / "aviationstack-mcp" / ".venv" / "Scripts" / "python.exe"
+AVIATION_MCP_PYTHON = (
+    BASE_DIR / "aviationstack-mcp" / ".venv" / "Scripts" / "python.exe"
+    if sys.platform == "win32"
+    else BASE_DIR / "aviationstack-mcp" / ".venv" / "bin" / "python"
+)
 
-client = MultiServerMCPClient(
+tavily_client = MultiServerMCPClient(
     {
         "tavily": {
             "transport": "streamable_http",
             "url": f"https://mcp.tavily.com/mcp/?tavilyApiKey={TAVILY_API_KEY}"
-        },
+        }
+    }
+)
 
-        "aviationstack": {
-            "transport": "stdio",
-            "command": str(AVIATION_MCP_PYTHON),
-            "args": [
-                "-m",
-                "aviationstack_mcp",
-                "mcp",
-                "run"
-            ],
-            "env": {
-                "AVIATION_STACK_API_KEY": AVIATION_STACK_API_KEY
-            }
-        },
-
+weather_client = MultiServerMCPClient(
+    {
         "weather": {
             "transport": "stdio",
             "command": sys.executable,
@@ -46,12 +40,28 @@ client = MultiServerMCPClient(
                 "OPENWEATHER_API_KEY": OPENWEATHER_API_KEY
             }
         }
-
-
-
     }
-
 )
+
+aviation_client = None
+if AVIATION_MCP_PYTHON.exists():
+    aviation_client = MultiServerMCPClient(
+        {
+            "aviationstack": {
+                "transport": "stdio",
+                "command": str(AVIATION_MCP_PYTHON),
+                "args": [
+                    "-m",
+                    "aviationstack_mcp",
+                    "mcp",
+                    "run"
+                ],
+                "env": {
+                    "AVIATION_STACK_API_KEY": AVIATION_STACK_API_KEY
+                }
+            }
+        }
+    )
 
 
 # tools discovery
@@ -114,10 +124,10 @@ async def initialize_mcp():
     global search_tool
     global aviation_tools
 
-    if search_tool is not None and aviation_tools:
+    if search_tool is not None:
         return
 
-    tools = await client.get_tools()
+    tools = await tavily_client.get_tools()
 
     print("\nAvailable MCP Tools:\n")
 
@@ -129,14 +139,6 @@ async def initialize_mcp():
         for tool in tools
         if tool.name == "tavily_search"
     )
-
-    aviation_tools = {
-        tool.name: tool
-        for tool in tools
-        if tool.name != "tavily_search"
-    }
-
-
 
 
 
@@ -157,7 +159,13 @@ async def aviation_mcp_call(
     tool_args: dict = None
 ):
 
-    tools = await client.get_tools()
+    if aviation_client is None:
+        return (
+            "AviationStack MCP is unavailable in this deployment. "
+            "Flight guidance will be estimated from general travel knowledge."
+        )
+
+    tools = await aviation_client.get_tools()
 
     tool = next(
         t for t in tools
@@ -174,7 +182,11 @@ async def aviation_mcp_call(
 
 async def get_airports():
 
-    await initialize_mcp()
+    if aviation_client is None:
+        return "Airport tool unavailable"
+
+    tools = await aviation_client.get_tools()
+    aviation_tools.update({tool.name: tool for tool in tools})
 
     tool = aviation_tools.get("list_airports")
 
@@ -188,7 +200,11 @@ async def get_airports():
 
 async def get_airlines():
 
-    await initialize_mcp()
+    if aviation_client is None:
+        return "Airline tool unavailable"
+
+    tools = await aviation_client.get_tools()
+    aviation_tools.update({tool.name: tool for tool in tools})
 
     tool = aviation_tools.get("list_airlines")
 
@@ -214,7 +230,7 @@ async def initialize_weather_tools():
     if weather_tool is not None:
         return
 
-    tools = await client.get_tools()
+    tools = await weather_client.get_tools()
 
     weather_tool = next(
         t for t in tools
